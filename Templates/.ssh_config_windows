@@ -1,0 +1,13 @@
+Host ProxyJumpDefault
+    HostName JumpHostName
+    Port 2222
+    User defaultjumpuser
+    ProxyCommand none
+
+Match host *,!ProxyJumpDefault exec "ncat -z -w1 127.0.0.1 8080"
+    ProxyCommand ncat --proxy 127.0.0.1:8080 --proxy-type socks5 %h %p
+
+Host ExampleHost
+    HostName ExampleHostName
+    User defaulthostuser
+    ProxyJump ProxyJumpDefault
