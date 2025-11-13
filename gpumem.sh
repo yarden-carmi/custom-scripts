@@ -78,8 +78,8 @@ echo "$pid_data" | awk \
     # END block: Runs after all data is processed
     END {
         # Changed header "Total (GiB)" to "Total"
-        printf "%-25s %-12s %-15s %-12s\n", "Container Name", "User", "Total", "Share (%)"
-        print "-----------------------------------------------------------------"
+        printf "%-40s %-12s %-15s %-12s\n", "Container Name", "User", "Total", "Share (%)"
+        print "---------------------------------------------------------------------------------"
 
         for (id in total_mem) {
             container_name = name_map[id] ? name_map[id] : id
@@ -98,9 +98,9 @@ echo "$pid_data" | awk \
             mem_gib_str = sprintf("%.2f GiB", mem_gib)
             
             # Print the string, left-aligned in a 15-char width
-            printf "%-25s %-12s %-15s %-12s\n", container_name, container_user, mem_gib_str, percent_str
+            printf "%-40s %-12s %-15s %-12s\n", container_name, container_user, mem_gib_str, percent_str
         }
-        printf "-----------------------------------------------------------------\n\n"
+        printf "---------------------------------------------------------------------------------\n\n"
 
     }
 '
