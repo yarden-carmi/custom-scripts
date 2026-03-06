@@ -8,6 +8,12 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
+TARGET_USER="${1:-}"
+if [[ -n "$TARGET_USER" ]] && ! id "$TARGET_USER" >/dev/null 2>&1; then
+    echo "Error: user '$TARGET_USER' does not exist."
+    exit 1
+fi
+
 echo "--- Ensuring all VNC users match orinakel profile ---"
 
 extract_display_num() {
@@ -76,6 +82,10 @@ for service_file in /etc/systemd/system/vncserver-*.service; do
     username=${service_name#vncserver-}
     username=${username%.service}
 
+    if [[ -n "$TARGET_USER" && "$username" != "$TARGET_USER" ]]; then
+        continue
+    fi
+
     id "$username" >/dev/null 2>&1 || continue
 
     user_id=$(id -u "$username")
@@ -134,6 +144,11 @@ for service_file in /etc/systemd/system/vncserver-*.service; do
     service_name=$(basename "$service_file")
     username=${service_name#vncserver-}
     username=${username%.service}
+
+    if [[ -n "$TARGET_USER" && "$username" != "$TARGET_USER" ]]; then
+        continue
+    fi
+
     systemctl enable "vncserver-$username.service" >/dev/null 2>&1 || true
     systemctl restart "vncserver-$username.service" >/dev/null 2>&1 || true
 done
