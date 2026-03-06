@@ -1,64 +1,74 @@
 #!/bin/bash
 
+set -euo pipefail
+
 # Ensure the script is run with root privileges
 if [ "$EUID" -ne 0 ]; then
-  echo "Please run as root (e.g., sudo ./vscode_verilog_setup.sh)"
-  exit 1
+    echo "Please run as root (e.g., sudo ./setup_vscode_verilog.sh)"
+    exit 1
+fi
+
+if ! command -v code >/dev/null 2>&1; then
+    echo "Error: 'code' command not found. Enable VS Code shell command first."
+    exit 1
 fi
 
 EXT1="mshr-h.VerilogHDL"
 EXT2="teros-technology.teroshdl"
 
-# Python snippet to safely inject settings into VS Code's JSONC format
+# Python snippet to safely update VS Code settings while tolerating JSONC comments.
 UPDATE_JSON_PY=$(cat << 'EOF'
-import sys, os
+import json
+import os
+import re
+import sys
 
 filepath = sys.argv[1]
 
-# Initialize a valid JSON structure if the file doesn't exist
 if not os.path.exists(filepath):
-    with open(filepath, 'w') as f:
-        f.write('{\n}')
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    with open(filepath, 'w', encoding='utf-8') as f:
+        f.write('{}\n')
 
-with open(filepath, 'r') as f:
-    content = f.read()
+with open(filepath, 'r', encoding='utf-8') as f:
+    raw = f.read().strip()
 
-# Only inject if the setting doesn't already exist
-if '"verilog.linting.linter"' not in content:
-    last_brace_idx = content.rfind('}')
-    
-    if last_brace_idx != -1:
-        before_brace = content[:last_brace_idx].strip()
-        # Check if the preceding line needs a comma
-        needs_comma = before_brace != '{' and not before_brace.endswith(',')
-        
-        # Injecting both the linter choice and the workspace discovery flag
-        insertion = '"verilog.linting.linter": "iverilog",\n    "verilog.linting.iverilog.arguments": "-y ${workspaceFolder}"'
-        
-        if needs_comma:
-            insertion = ',\n    ' + insertion + '\n'
-        else:
-            insertion = '\n    ' + insertion + '\n'
-            
-        new_content = content[:last_brace_idx] + insertion + content[last_brace_idx:]
-        
-        with open(filepath, 'w') as f:
-            f.write(new_content)
+if not raw:
+    raw = '{}'
+
+# Strip // and /* */ comments to parse JSONC-like settings.json.
+stripped = re.sub(r'/\*.*?\*/', '', raw, flags=re.S)
+stripped = re.sub(r'(^|\s)//.*$', '', stripped, flags=re.M)
+
+try:
+    data = json.loads(stripped)
+    if not isinstance(data, dict):
+        data = {}
+except Exception:
+    data = {}
+
+data['verilog.linting.linter'] = 'iverilog'
+data['verilog.linting.iverilog.arguments'] = '-y ${workspaceFolder}'
+
+with open(filepath, 'w', encoding='utf-8') as f:
+    json.dump(data, f, indent=4, sort_keys=True)
+    f.write('\n')
 EOF
 )
 
-# Loop through all human users in the /home/ directory
+# Loop through users that have VNC configured, to match this environment's VNC-focused setup.
 for user_home in /home/*; do
-    if [ -d "$user_home" ]; then
+    if [ -d "$user_home/.vnc" ]; then
         username=$(basename "$user_home")
+        id "$username" >/dev/null 2>&1 || continue
         
         echo "======================================"
         echo "Configuring VS Code for user: $username"
         echo "======================================"
 
         # 1. Install Extensions as the user
-        su - "$username" -c "code --install-extension $EXT1 --force"
-        su - "$username" -c "code --install-extension $EXT2 --force"
+        su - "$username" -c "code --install-extension $EXT1 --force" || true
+        su - "$username" -c "code --install-extension $EXT2 --force" || true
 
         # 2. Configure Settings
         CONFIG_DIR="$user_home/.config/Code/User"
