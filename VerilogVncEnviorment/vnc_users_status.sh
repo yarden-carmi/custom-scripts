@@ -78,15 +78,39 @@ get_start_ts() {
     echo "$ts"
 }
 
+current_vnc_log_file() {
+    local user_home=$1
+    local display=$2
+    local host
+
+    host=$(hostname)
+    echo "$user_home/.vnc/${host}:${display}.log"
+}
+
+log_has_accepted_connections() {
+    local log_file=$1
+
+    [[ -f "$log_file" ]] || return 1
+    grep -q 'Connections: accepted' "$log_file" 2>/dev/null
+}
+
 get_last_vnc_activity_ts() {
     local unit=$1
     local user_home=$2
+    local display=$3
     local line=""
     local latest_log=""
     local ts=""
+    local current_log=""
 
-    # Preferred source: journal disconnect/close message with real timestamp.
-    line=$(journalctl -u "$unit" --no-pager -o short-iso 2>/dev/null | grep -Ei 'Connections: closed|closed connection|client gone|disconnected' | tail -n 1 || true)
+    current_log=$(current_vnc_log_file "$user_home" "$display")
+    if ! log_has_accepted_connections "$current_log"; then
+        echo ""
+        return
+    fi
+
+    # Preferred source: journal lines that indicate the previous session ended.
+    line=$(journalctl -b -u "$unit" --no-pager -o short-iso 2>/dev/null | grep -Ei 'X connection to :[0-9]+ broken|Xtigervnc server cleanly exited|Stopping vncserver-.*service|Deactivated successfully|Connections: closed|closed connection|client gone|disconnected' | tail -n 1 || true)
     if [[ -n "$line" ]]; then
         echo "$line" | awk '{print $1" "$2}'
         return
@@ -103,14 +127,79 @@ get_last_vnc_activity_ts() {
     echo "$ts"
 }
 
+get_last_vnc_session_start_ts() {
+    local unit=$1
+    local user_home=$2
+    local display=$3
+    local line=""
+    local current_log=""
+
+    current_log=$(current_vnc_log_file "$user_home" "$display")
+    if ! log_has_accepted_connections "$current_log"; then
+        echo ""
+        return
+    fi
+
+    # Use the latest server/session start event from the current boot.
+    line=$(journalctl -b -u "$unit" --no-pager -o short-iso 2>/dev/null | grep -Ei 'New Xtigervnc server|Starting vncserver-.*service|Started vncserver-.*service' | tail -n 1 || true)
+    if [[ -n "$line" ]]; then
+        echo "$line" | awk '{print $1" "$2}'
+        return
+    fi
+
+    echo ""
+}
+
+get_last_vnc_session_start_before_ts() {
+    local unit=$1
+    local user_home=$2
+    local display=$3
+    local cutoff_ts=$4
+    local current_log=""
+
+    if [[ -z "$cutoff_ts" || "$cutoff_ts" == "-" ]]; then
+        echo ""
+        return
+    fi
+
+    current_log=$(current_vnc_log_file "$user_home" "$display")
+    if ! log_has_accepted_connections "$current_log"; then
+        echo ""
+        return
+    fi
+
+    journalctl -b -u "$unit" --no-pager -o short-iso 2>/dev/null \
+        | grep -Ei 'New Xtigervnc server|Starting vncserver-.*service|Started vncserver-.*service' \
+        | awk -v cutoff="$cutoff_ts" '
+            {
+                ts=$1
+                gsub("T", " ", ts)
+                sub(/[+-][0-9]{2}:[0-9]{2}$/, "", ts)
+                if (ts <= cutoff) {
+                    last=ts
+                }
+            }
+            END {
+                print last
+            }
+        '
+}
+
 compact_ts() {
     local ts=${1:-}
     if [[ -z "$ts" || "$ts" == "-" ]]; then
         echo "-"
         return
     fi
-    # Keep only "YYYY-MM-DD HH:MM:SS" for narrow output.
-    echo "$ts" | awk '{print $2" "$3}'
+
+    # Extract canonical timestamp from mixed sources (systemctl, journalctl, stat).
+    local extracted
+    extracted=$(echo "$ts" | grep -Eo '[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}' | head -n 1 || true)
+    if [[ -n "$extracted" ]]; then
+        echo "${extracted/T/ }"
+    else
+        echo "-"
+    fi
 }
 
 printf '%-14s %-5s %-4s %-5s %-33s %-19s %-19s\n' \
@@ -179,10 +268,15 @@ while IFS=: read -r user uid; do
             status="yes"
         fi
 
-        started=$(fmt_ts "$(get_start_ts "$unit")")
+        started=$(fmt_ts "$(get_last_vnc_session_start_ts "$unit" "$user_home" "$display")")
+        if [[ "$started" == "-" && "$status" == "yes" ]]; then
+            # If we cannot find a connect log line, fall back for active sessions.
+            started=$(fmt_ts "$(get_start_ts "$unit")")
+        fi
+
         if [[ "$active_state" == "active" ]]; then
             if [[ "$status" == "no" ]]; then
-                ended=$(fmt_ts "$(get_last_vnc_activity_ts "$unit" "$user_home")")
+                ended=$(fmt_ts "$(get_last_vnc_activity_ts "$unit" "$user_home" "$display")")
             else
                 ended="-"
             fi
@@ -190,10 +284,14 @@ while IFS=: read -r user uid; do
             ended=$(fmt_ts "$(systemctl show "$unit" -p InactiveEnterTimestamp --value 2>/dev/null || true)")
         fi
 
-        # Show START only for an active client session, not merely a running server.
-        if [[ "$status" != "yes" ]]; then
-            started="-"
+        # Disconnected session rows should report the latest start that happened before END.
+        if [[ "$status" == "no" && "$ended" != "-" ]]; then
+            started_before_end=$(fmt_ts "$(get_last_vnc_session_start_before_ts "$unit" "$user_home" "$display" "$(compact_ts "$ended")")")
+            if [[ "$started_before_end" != "-" ]]; then
+                started="$started_before_end"
+            fi
         fi
+
     fi
 
     # If no timestamp source exists, infer disconnect time from yes->no transition.
