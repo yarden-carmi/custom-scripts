@@ -10,6 +10,26 @@ fi
 
 echo "--- Ensuring all VNC users match orinakel profile ---"
 
+extract_display_num() {
+    local service_file=$1
+    local display_num=""
+
+    # Preferred source: explicit DISPLAY environment in unit file.
+    display_num=$(grep -Eo 'Environment=DISPLAY=:[0-9]+' "$service_file" 2>/dev/null | sed -E 's/.*:([0-9]+)/\1/' | head -n 1 || true)
+
+    # Fallback 1: parse display from ExecStart/ExecStartPre/ExecStop entries.
+    if [[ -z "$display_num" ]]; then
+        display_num=$(grep -Eo ':[0-9]+' "$service_file" 2>/dev/null | sed 's/^://' | head -n 1 || true)
+    fi
+
+    # Fallback 2: parse from Description "... on :N".
+    if [[ -z "$display_num" ]]; then
+        display_num=$(grep -Eo 'on :[0-9]+' "$service_file" 2>/dev/null | sed -E 's/.*:([0-9]+)/\1/' | head -n 1 || true)
+    fi
+
+    echo "$display_num"
+}
+
 rebuild_service() {
     local username=$1
     local user_id=$2
@@ -60,7 +80,7 @@ for service_file in /etc/systemd/system/vncserver-*.service; do
 
     user_id=$(id -u "$username")
     user_home=$(getent passwd "$username" | cut -d: -f6)
-    display_num=$(grep -Eo 'Environment=DISPLAY=:[0-9]+' "$service_file" | sed -E 's/.*:([0-9]+)/\1/' | head -n 1)
+    display_num=$(extract_display_num "$service_file")
 
     if [[ -z "$display_num" ]]; then
         echo "Skipping $username: display number not found"
