@@ -83,6 +83,13 @@ else
     rm -rf "/home/$USERNAME/.vnc" 2>/dev/null || true
 fi
 
+echo "--- Step 5b: Cleaning keyring session artifacts ---"
+pkill -u "$USERNAME" -f gnome-keyring-daemon 2>/dev/null || true
+if [[ -n "$USER_HOME" && -d "$USER_HOME" ]]; then
+    rm -rf "$USER_HOME/.local/share/keyrings" 2>/dev/null || true
+    rm -rf "$USER_HOME/.cache/keyring-*" 2>/dev/null || true
+fi
+
 echo "--- Step 6: Disabling Linger ---"
 loginctl disable-linger "$USERNAME" 2>/dev/null
 

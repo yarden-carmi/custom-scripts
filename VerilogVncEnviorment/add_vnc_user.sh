@@ -23,6 +23,21 @@ fi
 
 PORT=$((5900 + DISPLAY_NUM))
 
+ensure_vnc_runtime_deps() {
+  local pkgs=(dbus-x11 libsecret-tools gnome-keyring)
+  local missing=()
+
+  for p in "${pkgs[@]}"; do
+    dpkg -s "$p" >/dev/null 2>&1 || missing+=("$p")
+  done
+
+  if (( ${#missing[@]} > 0 )); then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y
+    apt-get install -y "${missing[@]}"
+  fi
+}
+
 write_xstartup() {
   local user_vnc_dir=$1
 
@@ -38,12 +53,23 @@ export LIBGL_ALWAYS_SOFTWARE=1
 export GALLIUM_DRIVER=llvmpipe
 export DISPLAY=$DISPLAY
 
+# Ensure one per-session D-Bus bus and unlocked Secret Service.
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-launch >/dev/null 2>&1; then
+  eval "$(dbus-launch --sh-syntax)"
+fi
+
+if command -v gnome-keyring-daemon >/dev/null 2>&1; then
+  eval "$(echo '\n' | gnome-keyring-daemon --unlock 2>/dev/null)" || true
+  eval "$(gnome-keyring-daemon --start --components=secrets,pkcs11,ssh,gpg 2>/dev/null)" || true
+  export SSH_AUTH_SOCK
+fi
+
 (sleep 4 && gsettings set org.gnome.desktop.screensaver lock-enabled false) &
 (sleep 4 && gsettings set org.gnome.desktop.session idle-delay 0) &
 (sleep 4 && gsettings set org.gnome.desktop.lockdown disable-lock-screen true) &
 
 if [ -x /usr/bin/gnome-session ]; then
-  exec dbus-run-session -- gnome-session --session=ubuntu --disable-acceleration-check
+  exec gnome-session --session=ubuntu --disable-acceleration-check
 fi
 
 exec /etc/X11/Xsession
@@ -89,6 +115,7 @@ EOF
 }
 
 echo "--- Step 1: User Setup ---"
+ensure_vnc_runtime_deps
 id "$USERNAME" &>/dev/null || adduser --gecos "" "$USERNAME"
 loginctl enable-linger "$USERNAME"
 
