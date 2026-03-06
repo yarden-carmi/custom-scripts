@@ -1,5 +1,6 @@
 #!/bin/bash
 # VNC fixer to align existing user services with the known-good orinakel profile.
+# Usage: sudo ./userfixer.sh [username]
 
 set -euo pipefail
 

@@ -10,6 +10,26 @@ fi
 
 echo "--- Enforcing VNC persistence and service profile ---"
 
+extract_display_num() {
+    local service_file=$1
+    local display_num=""
+
+    # Preferred source: explicit DISPLAY environment in unit file.
+    display_num=$(grep -Eo 'Environment=DISPLAY=:[0-9]+' "$service_file" 2>/dev/null | sed -E 's/.*:([0-9]+)/\1/' | head -n 1 || true)
+
+    # Fallback 1: parse display from ExecStart/ExecStartPre/ExecStop entries.
+    if [[ -z "$display_num" ]]; then
+        display_num=$(grep -Eo ':[0-9]+' "$service_file" 2>/dev/null | sed 's/^://' | head -n 1 || true)
+    fi
+
+    # Fallback 2: parse from Description "... on :N".
+    if [[ -z "$display_num" ]]; then
+        display_num=$(grep -Eo 'on :[0-9]+' "$service_file" 2>/dev/null | sed -E 's/.*:([0-9]+)/\1/' | head -n 1 || true)
+    fi
+
+    echo "$display_num"
+}
+
 rebuild_service() {
     local username=$1
     local user_id=$2
@@ -65,7 +85,7 @@ for service_file in /etc/systemd/system/vncserver-*.service; do
 
     [[ -n "$user_home" && -d "$user_home" ]] || continue
 
-    display_num=$(grep -Eo 'Environment=DISPLAY=:[0-9]+' "$service_file" | sed -E 's/.*:([0-9]+)/\1/' | head -n 1)
+    display_num=$(extract_display_num "$service_file")
     if [[ -z "$display_num" ]]; then
         echo "Skipping $username: unable to determine display number from $service_file"
         continue
@@ -76,9 +96,38 @@ for service_file in /etc/systemd/system/vncserver-*.service; do
 
     mkdir -p "$user_home/.vnc"
     printf 'securitytypes=VncAuth\n' > "$user_home/.vnc/config"
+
+    cat <<'EOF' > "$user_home/.vnc/xstartup"
+#!/bin/sh
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+
+export XDG_CURRENT_DESKTOP="Ubuntu:GNOME"
+export GNOME_SHELL_SESSION_MODE=ubuntu
+export XDG_SESSION_TYPE=x11
+export LIBGL_ALWAYS_SOFTWARE=1
+export GALLIUM_DRIVER=llvmpipe
+export DISPLAY=$DISPLAY
+
+(sleep 4 && gsettings set org.gnome.desktop.screensaver lock-enabled false) &
+(sleep 4 && gsettings set org.gnome.desktop.session idle-delay 0) &
+(sleep 4 && gsettings set org.gnome.desktop.lockdown disable-lock-screen true) &
+
+if [ -x /usr/bin/gnome-session ]; then
+    exec dbus-run-session -- gnome-session --session=ubuntu --disable-acceleration-check
+fi
+
+exec /etc/X11/Xsession
+EOF
+
     chown -R "$username:$username" "$user_home/.vnc"
     chmod 700 "$user_home/.vnc"
     chmod 600 "$user_home/.vnc/config"
+    chmod +x "$user_home/.vnc/xstartup"
+
+    # Keep service rewrite flow identical to userfixer: stop first and clear stale locks.
+    systemctl stop "vncserver-$username.service" 2>/dev/null || true
+    rm -f "/tmp/.X$display_num-lock" "/tmp/.X11-unix/X$display_num"
 
     rebuild_service "$username" "$user_id" "$user_home" "$display_num"
     systemctl enable "vncserver-$username.service" >/dev/null 2>&1 || true

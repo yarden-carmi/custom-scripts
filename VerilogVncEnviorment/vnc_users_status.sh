@@ -6,9 +6,24 @@
 
 set -euo pipefail
 
-get_display_from_unit_file() {
+extract_display_num() {
     local unit_file=$1
-    grep -E '^Environment=DISPLAY=:[0-9]+' "$unit_file" 2>/dev/null | sed -E 's/.*:([0-9]+)/\1/' | head -n 1 || true
+    local display_num=""
+
+    # Preferred source: explicit DISPLAY environment in unit file.
+    display_num=$(grep -Eo 'Environment=DISPLAY=:[0-9]+' "$unit_file" 2>/dev/null | sed -E 's/.*:([0-9]+)/\1/' | head -n 1 || true)
+
+    # Fallback 1: parse display from ExecStart/ExecStartPre/ExecStop entries.
+    if [[ -z "$display_num" ]]; then
+        display_num=$(grep -Eo ':[0-9]+' "$unit_file" 2>/dev/null | sed 's/^://' | head -n 1 || true)
+    fi
+
+    # Fallback 2: parse from Description "... on :N".
+    if [[ -z "$display_num" ]]; then
+        display_num=$(grep -Eo 'on :[0-9]+' "$unit_file" 2>/dev/null | sed -E 's/.*:([0-9]+)/\1/' | head -n 1 || true)
+    fi
+
+    echo "$display_num"
 }
 
 connected_count_for_port() {
@@ -34,6 +49,20 @@ fmt_ts() {
     else
         echo "$ts"
     fi
+}
+
+get_start_ts() {
+    local unit=$1
+    local ts=""
+
+    # Prefer the main service process start time (updates on restart).
+    ts=$(systemctl show "$unit" -p ExecMainStartTimestamp --value 2>/dev/null || true)
+    if [[ -z "$ts" || "$ts" == "n/a" ]]; then
+        # Fallback to unit active-enter timestamp.
+        ts=$(systemctl show "$unit" -p ActiveEnterTimestamp --value 2>/dev/null || true)
+    fi
+
+    echo "$ts"
 }
 
 compact_ts() {
@@ -64,9 +93,9 @@ getent passwd | awk -F: '$3>=1000 && $1!="nobody" && $7 !~ /(nologin|false)$/ {p
 
     if systemctl cat "$unit" >/dev/null 2>&1 || [[ -f "$unit_file" ]]; then
         if [[ -f "$unit_file" ]]; then
-            display=$(get_display_from_unit_file "$unit_file")
+            display=$(extract_display_num "$unit_file")
         else
-            display=$(systemctl cat "$unit" 2>/dev/null | grep -E '^Environment=DISPLAY=:[0-9]+' | sed -E 's/.*:([0-9]+)/\1/' | head -n 1 || true)
+            display=$(extract_display_num <(systemctl cat "$unit" 2>/dev/null || true))
         fi
 
         if [[ -n "${display:-}" ]]; then
@@ -111,11 +140,16 @@ getent passwd | awk -F: '$3>=1000 && $1!="nobody" && $7 !~ /(nologin|false)$/ {p
             status="yes"
         fi
 
-        started=$(fmt_ts "$(systemctl show "$unit" -p ActiveEnterTimestamp --value 2>/dev/null || true)")
+        started=$(fmt_ts "$(get_start_ts "$unit")")
         if [[ "$active_state" == "active" ]]; then
             ended="-"
         else
             ended=$(fmt_ts "$(systemctl show "$unit" -p InactiveEnterTimestamp --value 2>/dev/null || true)")
+        fi
+
+        # Show START only for an active client session, not merely a running server.
+        if [[ "$status" != "yes" ]]; then
+            started="-"
         fi
     fi
 

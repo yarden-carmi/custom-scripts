@@ -3,18 +3,50 @@
 
 set -euo pipefail
 
+extract_display_num() {
+    local service_file=$1
+    local display_num=""
+
+    # Preferred source: explicit DISPLAY environment in unit file.
+    display_num=$(grep -Eo 'Environment=DISPLAY=:[0-9]+' "$service_file" 2>/dev/null | sed -E 's/.*:([0-9]+)/\1/' | head -n 1 || true)
+
+    # Fallback 1: parse display from ExecStart/ExecStartPre/ExecStop entries.
+    if [[ -z "$display_num" ]]; then
+        display_num=$(grep -Eo ':[0-9]+' "$service_file" 2>/dev/null | sed 's/^://' | head -n 1 || true)
+    fi
+
+    # Fallback 2: parse from Description "... on :N".
+    if [[ -z "$display_num" ]]; then
+        display_num=$(grep -Eo 'on :[0-9]+' "$service_file" 2>/dev/null | sed -E 's/.*:([0-9]+)/\1/' | head -n 1 || true)
+    fi
+
+    echo "$display_num"
+}
+
 if [[ $EUID -ne 0 ]]; then
     echo "This script must be run as root (sudo)."
     exit 1
 fi
 
-if [[ $# -ne 2 ]]; then
-    echo "Usage: $0 <username> <display_number>"
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+    echo "Usage: $0 <username> [display_number]"
     exit 1
 fi
 
 USERNAME=$1
-DISPLAY_NUM=$2
+DISPLAY_NUM="${2:-}"
+
+if [[ -z "$DISPLAY_NUM" ]]; then
+    SERVICE_FILE="/etc/systemd/system/vncserver-$USERNAME.service"
+    if [[ -f "$SERVICE_FILE" ]]; then
+        DISPLAY_NUM=$(extract_display_num "$SERVICE_FILE")
+    fi
+fi
+
+if [[ -z "$DISPLAY_NUM" ]]; then
+    echo "Error: Unable to determine display number. Provide it explicitly or ensure service file exists."
+    exit 1
+fi
 
 if ! [[ "$DISPLAY_NUM" =~ ^[0-9]+$ ]]; then
     echo "Error: display_number must be numeric."
